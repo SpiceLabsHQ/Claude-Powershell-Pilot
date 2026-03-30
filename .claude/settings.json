@@ -2,6 +2,11 @@
   "enabledPlugins": {
     "skill-creator@claude-plugins-official": true
   },
+  "permissions": {
+    "allow": [
+      "Bash(npx markdownlint-cli*)"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {
