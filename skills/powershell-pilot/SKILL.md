@@ -14,6 +14,11 @@ Runs `pwsh` commands through a persistent background session. Session state
 sessions run concurrently — use different names when tasks need different
 permission levels.
 
+## Environment
+
+- **PowerShell version:** !`pwsh --version`
+- **Installed modules:** !`pwsh -NoProfile -c "(Get-Module -ListAvailable | Select-Object -ExpandProperty Name | Sort-Object -Unique) -join ', '"`
+
 ## How it works
 
 - Two named FIFOs per session carry commands in and sentinels out (no polling or sleep)
