@@ -5,7 +5,7 @@ description: >
   automate multi-step tasks that share session state, or authenticate to services
   (Azure, M365, Exchange Online, etc.) and run commands in the same authenticated
   session. Maintains persistent named sessions across multiple tool calls.
-allowed-tools: Bash(pwsh *)
+allowed-tools: Bash(pwsh --version), Bash(bash */powershell-pilot/scripts/*)
 ---
 
 # PowerShell Pilot
@@ -17,8 +17,8 @@ permission levels.
 
 ## Environment
 
-- **PowerShell version:** !`pwsh --version 2>/dev/null || echo "NOT INSTALLED"`
-- **Installed modules:** !`pwsh -NoProfile -c "(Get-Module -ListAvailable | Select-Object -ExpandProperty Name | Sort-Object -Unique) -join ', '" 2>/dev/null || echo "NOT INSTALLED"`
+- **PowerShell version:** !`pwsh --version`
+- **Installed modules:** !`bash ${CLAUDE_SKILL_DIR}/scripts/get-modules.sh`
 
 If either value above shows `NOT INSTALLED`, stop and tell the user that `pwsh`
 is not installed, then offer to install it:
