@@ -16,8 +16,16 @@ permission levels.
 
 ## Environment
 
-- **PowerShell version:** !`pwsh --version`
-- **Installed modules:** !`pwsh -NoProfile -c "(Get-Module -ListAvailable | Select-Object -ExpandProperty Name | Sort-Object -Unique) -join ', '"`
+- **PowerShell version:** !`pwsh --version 2>/dev/null || echo "NOT INSTALLED"`
+- **Installed modules:** !`pwsh -NoProfile -c "(Get-Module -ListAvailable | Select-Object -ExpandProperty Name | Sort-Object -Unique) -join ', '" 2>/dev/null || echo "NOT INSTALLED"`
+
+If either value above shows `NOT INSTALLED`, stop and tell the user that `pwsh`
+is not installed, then offer to install it:
+
+- **macOS:** `brew install powershell`
+- **Linux (Debian/Ubuntu):** follow the [Microsoft install guide](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux)
+
+Do not attempt to start a session until `pwsh` is available.
 
 ## How it works
 
