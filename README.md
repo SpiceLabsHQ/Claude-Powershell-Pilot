@@ -1,10 +1,10 @@
-# Claude Plugin Template
+# Claude Powershell Pilot
 
-[![CI](https://github.com/owner/my-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/owner/my-plugin/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/github/v/release/owner/my-plugin?label=version)](https://github.com/owner/my-plugin/releases/latest)
-[![License](https://img.shields.io/github/license/owner/my-plugin)](LICENSE)
+[![CI](https://github.com/SpiceLabsHQ/Claude-Powershell-Pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/SpiceLabsHQ/Claude-Powershell-Pilot/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/github/v/release/SpiceLabsHQ/Claude-Powershell-Pilot?label=version)](https://github.com/SpiceLabsHQ/Claude-Powershell-Pilot/releases/latest)
+[![License](https://img.shields.io/github/license/SpiceLabsHQ/Claude-Powershell-Pilot)](LICENSE)
 
-A template for building Claude skills that work as both a **Claude Code plugin** and a **Claude Desktop skill**.
+A Claude Code plugin and Claude Desktop skill package for PowerShell automation.
 
 ## Structure
 
@@ -25,7 +25,7 @@ A template for building Claude skills that work as both a **Claude Code plugin**
 ### Claude Code
 
 ```bash
-claude plugin install github:owner/my-plugin
+claude plugin install github:SpiceLabsHQ/Claude-Powershell-Pilot
 ```
 
 ### Claude Desktop
