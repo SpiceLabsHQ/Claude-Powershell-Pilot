@@ -54,9 +54,17 @@ Then start the runner as a background task (use `run_in_background: true`):
 bash ${CLAUDE_SKILL_DIR}/scripts/run-session.sh <SESSION>
 ```
 
-**Wait 3 seconds** after starting before sending the first command. PowerShell's
-cold-start JIT on macOS/Linux takes 2–3 s; writing before it is ready causes the
-write to block.
+**Verify the runner started cleanly** by sending a test command after 3 seconds.
+PowerShell's cold-start JIT on macOS/Linux takes 2–3 s; writing before it is
+ready causes the write to block.
+
+```bash
+echo '$PSVersionTable.PSVersion.ToString()' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 15
+```
+
+If this times out or returns a non-zero exit code, the runner did not start. Stop
+the session, check for error output in `/tmp/pwsh_sess_<SESSION>.log`, and restart
+before proceeding.
 
 ---
 
