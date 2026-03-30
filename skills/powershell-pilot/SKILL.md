@@ -60,34 +60,29 @@ write to block.
 
 ## Step 2 — Run a command
 
-Pipe the PowerShell command into `send-command.sh`. Use a timeout appropriate for
-the expected runtime (default 120 s):
+Use `run-command.sh` — it sends the command and reads the output in a single
+script call. This is the **required** pattern; do not use `$()` command
+substitution or pipe between `send-command.sh` and `read-output.sh` inline,
+because compound shell expressions are flagged for user approval even when
+the scripts themselves are pre-approved.
 
 ```bash
-echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/send-command.sh <SESSION>
+echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION>
 ```
 
-For long-running commands (e.g., large data exports):
+For long-running commands (e.g., large data exports), pass a timeout in seconds:
 
 ```bash
-echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/send-command.sh <SESSION> 300
+echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 300
 ```
 
-The script prints a sentinel line when the command finishes. Pass it directly to
-`read-output.sh`:
+For large output, pass a grep pattern as the third argument:
 
 ```bash
-sentinel=$(echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/send-command.sh <SESSION>)
-bash ${CLAUDE_SKILL_DIR}/scripts/read-output.sh "$sentinel"
+echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 120 "search pattern"
 ```
 
-For large output, pass a grep pattern to avoid loading everything:
-
-```bash
-bash ${CLAUDE_SKILL_DIR}/scripts/read-output.sh "$sentinel" "search pattern"
-```
-
-`read-output.sh` automatically:
+`run-command.sh` automatically:
 
 - Prints full stdout when output is ≤ 100 lines
 - Prints the first 20 lines and a reminder to grep when output exceeds 100 lines
@@ -109,8 +104,7 @@ know a browser window or device-code prompt is about to appear.
 **If approved**, send with a 5-minute timeout:
 
 ```bash
-sentinel=$(echo '<auth command>' | bash ${CLAUDE_SKILL_DIR}/scripts/send-command.sh <SESSION> 300)
-bash ${CLAUDE_SKILL_DIR}/scripts/read-output.sh "$sentinel"
+echo '<auth command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 300
 ```
 
 **Common auth commands by service:**
@@ -125,8 +119,21 @@ bash ${CLAUDE_SKILL_DIR}/scripts/read-output.sh "$sentinel"
 Install missing modules in-session:
 
 ```bash
-echo 'Install-Module <name> -Scope CurrentUser -Force' | bash ${CLAUDE_SKILL_DIR}/scripts/send-command.sh <SESSION> 120
+echo 'Install-Module <name> -Scope CurrentUser -Force' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 120
 ```
+
+**Microsoft Graph — beta API resources:** The `Get-Mg*` cmdlets only cover v1.0 Graph
+APIs. Many resources (device health scripts, compliance policies, advanced Intune
+data, etc.) are beta-only and have no matching cmdlet. If `Get-Mg*` returns
+"not recognized" for a resource that should exist, query the beta endpoint directly:
+
+```powershell
+Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/beta/<resource-path>"
+```
+
+Do not retry module imports or search for alternative cmdlets — if the resource is
+not in v1.0, the cmdlet simply does not exist and `Invoke-MgGraphRequest` is the
+correct approach.
 
 ---
 
@@ -160,7 +167,8 @@ variables or tokens.
 | Symptom                         | Cause                               | Fix                                      |
 | ------------------------------- | ----------------------------------- | ---------------------------------------- |
 | Write to cmd pipe hangs         | Session not started yet             | Check state file exists; wait 3 s        |
-| `send-command.sh` times out     | Command exceeded timeout            | Retry with higher timeout argument       |
+| `run-command.sh` times out      | Command exceeded timeout            | Retry with higher timeout argument       |
 | Exit code 1, empty stderr       | Module not installed                | Run `Install-Module` in-session          |
+| `Get-Mg*` cmdlet not recognized | Resource is beta-only in Graph      | Use `Invoke-MgGraphRequest` with beta URL |
 | Sentinel never arrives          | Runner crashed                      | Check `/tmp/pwsh_sess_<name>.log`        |
 | Auth command times out          | Browser not completed in time       | Use 300 s timeout for all auth commands  |
