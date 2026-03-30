@@ -19,6 +19,8 @@ permission levels.
 
 - **PowerShell version:** !`pwsh --version`
 - **Installed modules:** !`bash ${CLAUDE_SKILL_DIR}/scripts/get-modules.sh`
+- **Auth status:**
+  !`bash ${CLAUDE_SKILL_DIR}/scripts/get-auth-status.sh`
 
 If either value above shows `NOT INSTALLED`, stop and tell the user that `pwsh`
 is not installed, then offer to install it:
@@ -92,29 +94,55 @@ echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION
 
 ## Step 3 — Authenticate (when required)
 
-Only send auth commands after getting explicit user approval. The user needs to
-know a browser window or device-code prompt is about to appear.
+**Check the Auth status from the Environment section above before doing anything.**
+If a service already shows an authenticated account, tell the user which account
+is active and proceed without re-authenticating.
 
-**Ask permission** using AskUserQuestion before sending any auth command:
+**If not connected**, use `auth-device-code.sh`. Do NOT use `run-command.sh` for
+authentication — it buffers all output until the command finishes, so the device
+code only becomes visible after the 120-second Microsoft timeout expires.
+`auth-device-code.sh` runs auth in a separate process where stdout streams to a
+file in real time, making the device code available within seconds.
 
-- Question: "To proceed, I need to authenticate to [service]. This will open your
-  browser (or display a device code). Approve?"
-- Options: Approve / Cancel
+**Auth flow:**
 
-**If approved**, send with a 5-minute timeout:
+1. Start auth in the background (`run_in_background: true`). Do NOT add a
+   `sleep` prefix — `auth-device-code.sh` handles timing internally:
 
-```bash
-echo '<auth command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 300
-```
+    ```bash
+    echo '<auth command>' | bash ${CLAUDE_SKILL_DIR}/scripts/auth-device-code.sh <SESSION>
+    ```
 
-**Common auth commands by service:**
+2. Use `TaskOutput` with `block: false` after 10 seconds to read the task output.
+   It will contain a line like:
 
-| Service           | Command                          |
-| ----------------- | -------------------------------- |
-| Azure             | `Connect-AzAccount`              |
-| Microsoft Graph   | `Connect-MgGraph -Scopes "..."`  |
-| Exchange Online   | `Connect-ExchangeOnline`         |
-| SharePoint Online | `Connect-PnPOnline -Interactive` |
+   `To sign in, use a web browser to open the page https://login.microsoft.com/device and enter the code XXXXXXXX to authenticate.`
+
+3. Immediately tell the user:
+
+   > To authenticate, open **<https://microsoft.com/devicelogin>** in your browser
+   > and enter the code: **XXXXXXXX**
+
+4. Use `TaskOutput` with `block: true` and `timeout: 300000` to wait for the
+   task to finish. Do NOT poll the output file manually — that file belongs to
+   the internal `auth-device-code.sh` process and is deleted when auth completes.
+   The task output ends with either `AUTH_COMPLETE` or `AUTH_FAILED`.
+
+5. After `AUTH_COMPLETE`, establish the connection in the session using the
+   silent variant — tokens are now cached so this completes instantly:
+
+    ```bash
+    echo '<silent connect command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 30
+    ```
+
+**Auth commands by service:**
+
+| Service           | Device code command                                          | Silent reconnect after auth          |
+| ----------------- | ------------------------------------------------------------ | ------------------------------------ |
+| Azure             | `Connect-AzAccount -UseDeviceAuthentication`                 | `Get-AzContext` (auto from ~/.Azure) |
+| Microsoft Graph   | `Connect-MgGraph -UseDeviceAuthentication -Scopes "..."`     | `Connect-MgGraph -NoWelcome`         |
+| Exchange Online   | `Connect-ExchangeOnline -Device`                             | `Connect-ExchangeOnline -Device`     |
+| SharePoint Online | `Connect-PnPOnline -DeviceLogin`                             | `Connect-PnPOnline -DeviceLogin`     |
 
 Install missing modules in-session:
 
@@ -164,11 +192,11 @@ variables or tokens.
 
 ## Troubleshooting
 
-| Symptom                         | Cause                               | Fix                                      |
-| ------------------------------- | ----------------------------------- | ---------------------------------------- |
-| Write to cmd pipe hangs         | Session not started yet             | Check state file exists; wait 3 s        |
-| `run-command.sh` times out      | Command exceeded timeout            | Retry with higher timeout argument       |
-| Exit code 1, empty stderr       | Module not installed                | Run `Install-Module` in-session          |
-| `Get-Mg*` cmdlet not recognized | Resource is beta-only in Graph      | Use `Invoke-MgGraphRequest` with beta URL |
-| Sentinel never arrives          | Runner crashed                      | Check `/tmp/pwsh_sess_<name>.log`        |
-| Auth command times out          | Browser not completed in time       | Use 300 s timeout for all auth commands  |
+| Symptom                         | Cause                               | Fix                                           |
+| ------------------------------- | ----------------------------------- | --------------------------------------------- |
+| Write to cmd pipe hangs         | Session not started yet             | Check state file exists; wait 3 s             |
+| `run-command.sh` times out      | Command exceeded timeout            | Retry with higher timeout argument            |
+| Exit code 1, empty stderr       | Module not installed                | Run `Install-Module` in-session               |
+| `Get-Mg*` cmdlet not recognized | Resource is beta-only in Graph      | Use `Invoke-MgGraphRequest` with beta URL     |
+| Sentinel never arrives          | Runner crashed                      | Check `/tmp/pwsh_sess_<name>.log`             |
+| Auth command times out          | Device code not entered in time     | Use 300 s timeout; re-run to get a new code   |
