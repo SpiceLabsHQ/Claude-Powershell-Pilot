@@ -4,6 +4,11 @@ set -e
 SESSION="${1:-default}"
 SCRIPT_DIR="$(dirname "$0")"
 LOG="/tmp/pwsh_sess_${SESSION}.log"
+PID_FILE="/tmp/pwsh_sess_${SESSION}.pid"
+
+echo $$ > "$PID_FILE"
+# shellcheck disable=SC2064
+trap "rm -f '$PID_FILE'" EXIT
 
 exec 3<>/tmp/pwsh_sess_${SESSION}_result || {
     echo "ERROR: could not open result FIFO — session FIFOs missing or corrupt. Run start-session.sh first." >&2

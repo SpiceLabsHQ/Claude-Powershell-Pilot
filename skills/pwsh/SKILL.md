@@ -66,6 +66,24 @@ If this times out or returns a non-zero exit code, the runner did not start. Sto
 the session, check for error output in `/tmp/pwsh_sess_<SESSION>.log`, and restart
 before proceeding.
 
+**Runner lifetime:** The runner stays alive indefinitely — there is no idle timeout.
+It exits only when it receives `__EXIT__` (sent by `stop-session.sh`), when the
+PowerShell process crashes, or when the background task is killed. Once started
+successfully, the session remains valid across any number of tool calls until
+explicitly stopped.
+
+**Checking liveness mid-session:** Use `check-session.sh` before a command if you
+suspect the runner may have died (e.g., after a long gap between commands or after
+a previous command timed out):
+
+```bash
+bash ${CLAUDE_SKILL_DIR}/scripts/check-session.sh <SESSION>
+```
+
+Exits 0 and prints `alive: pid=<PID>` if the runner is live; exits 1 with a `dead:`
+message otherwise. `run-command.sh` also checks liveness automatically and returns
+exit code 2 with an explicit error if the runner is not running.
+
 ---
 
 ## Step 2 — Run a command
@@ -200,11 +218,12 @@ variables or tokens.
 
 ## Troubleshooting
 
-| Symptom                         | Cause                               | Fix                                           |
-| ------------------------------- | ----------------------------------- | --------------------------------------------- |
-| Write to cmd pipe hangs         | Session not started yet             | Check state file exists; wait 3 s             |
-| `run-command.sh` times out      | Command exceeded timeout            | Retry with higher timeout argument            |
-| Exit code 1, empty stderr       | Module not installed                | Run `Install-Module` in-session               |
-| `Get-Mg*` cmdlet not recognized | Resource is beta-only in Graph      | Use `Invoke-MgGraphRequest` with beta URL     |
-| Sentinel never arrives          | Runner crashed                      | Check `/tmp/pwsh_sess_<name>.log`             |
-| Auth command times out          | Device code not entered in time     | Use 300 s timeout; re-run to get a new code   |
+| Symptom                                  | Cause                               | Fix                                                          |
+| ---------------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
+| `run-command.sh` exits 2, "not running"  | Runner died or never started        | Run `check-session.sh`; restart with `run-session.sh`        |
+| Write to cmd pipe hangs                  | Session not started yet             | Check state file exists; wait 3 s                            |
+| `run-command.sh` times out               | Command exceeded timeout            | Retry with higher timeout argument                           |
+| Exit code 1, empty stderr                | Module not installed                | Run `Install-Module` in-session                              |
+| `Get-Mg*` cmdlet not recognized          | Resource is beta-only in Graph      | Use `Invoke-MgGraphRequest` with beta URL                    |
+| Sentinel never arrives                   | Runner crashed                      | Check `/tmp/pwsh_sess_<name>.log`                            |
+| Auth command times out                   | Device code not entered in time     | Use 300 s timeout; re-run to get a new code                  |

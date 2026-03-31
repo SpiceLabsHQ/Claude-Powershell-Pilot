@@ -7,6 +7,12 @@ SESSION="${1:-default}"
 TIMEOUT="${2:-120}"
 PATTERN="${3:-}"
 
+PID_FILE="/tmp/pwsh_sess_${SESSION}.pid"
+if [ ! -f "$PID_FILE" ] || ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+  echo "ERROR: session runner is not running. Start it with run-session.sh." >&2
+  exit 2
+fi
+
 CMD="$(cat)"
 printf '%s\n' "$CMD" > "/tmp/pwsh_sess_${SESSION}_cmd"
 
