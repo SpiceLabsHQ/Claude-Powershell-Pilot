@@ -1,11 +1,11 @@
 ---
-name: powershell-pilot
+name: pwsh
 description: >
   Use when the user wants to run PowerShell (pwsh) commands on macOS or Linux,
   automate multi-step tasks that share session state, or authenticate to services
   (Azure, M365, Exchange Online, etc.) and run commands in the same authenticated
   session. Maintains persistent named sessions across multiple tool calls.
-allowed-tools: Bash(pwsh --version), Bash(bash */powershell-pilot/scripts/*)
+allowed-tools: Bash(pwsh --version), Bash(bash */pwsh/scripts/*)
 ---
 
 # PowerShell Pilot
