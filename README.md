@@ -24,8 +24,16 @@ A Claude Code plugin and Claude Desktop skill package for PowerShell automation.
 
 ### Claude Code
 
+First, register the Spice Labs marketplace (one-time setup):
+
 ```bash
-claude plugin install github:SpiceLabsHQ/Claude-Powershell-Pilot
+claude plugin marketplace add SpiceLabsHQ/claude-marketplace
+```
+
+Then install the plugin:
+
+```bash
+claude plugin install powershell-pilot@spice-labs
 ```
 
 ### Claude Desktop
