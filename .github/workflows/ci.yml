@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  # Least-privilege default (actions-audit/zizmor excessive-permissions); the
+  # read-only `validate` job inherits this, and `release` overrides with the
+  # writes it needs. (DEV-511)
+  contents: read
+
 jobs:
   validate:
     name: Validate
