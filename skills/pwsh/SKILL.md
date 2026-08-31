@@ -22,17 +22,34 @@ permission levels.
 - **Auth status:**
   !`bash ${CLAUDE_SKILL_DIR}/scripts/get-auth-status.sh`
 
-If either value above shows `NOT INSTALLED`, stop and tell the user that `pwsh`
-is not installed, then offer to install it:
+If either value shows a background task ID (`Command running in background with
+ID: ...`), the env check is still running. Wait for both tasks:
+
+```
+TaskOutput(task_id: <ID>, block: true, timeout: 60000)
+```
+
+If `retrieval_status` is `timeout`, read the output file at the path shown in
+the task message. If the file is empty or the task later fails with no output,
+treat it as `TIMED OUT` and proceed to start a session — the runner uses
+`-NoProfile` and starts faster than the env checks.
+
+If either value shows `NOT INSTALLED`, stop and tell the user that `pwsh` is not
+installed, then offer to install it:
 
 - **macOS:** `brew install powershell`
 - **Linux (Debian/Ubuntu):** follow the [Microsoft install guide](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux)
 
 Do not attempt to start a session until `pwsh` is available.
 
+If either value shows `TIMED OUT`, `pwsh` is installed but took more than the
+allowed time to cold-start. Proceed to start a session normally — the runner
+uses `-NoProfile` which is faster than the environment check scripts.
+
 ## How it works
 
 - Two named FIFOs per session carry commands in and sentinels out (no polling or sleep)
+- `runner.ps1` emits `READY` on the result FIFO before entering its command loop; `wait-ready.sh` blocks until that signal arrives
 - Each command's stdout and stderr go to separate per-command temp files
 - Sentinel format: `DONE:<exitCode>:<stdoutFile>:<stderrFile>:<lineCount>`
 - Session state lives in `/tmp/pwsh_session_<name>.json`
@@ -54,21 +71,39 @@ Then start the runner as a background task (use `run_in_background: true`):
 bash ${CLAUDE_SKILL_DIR}/scripts/run-session.sh <SESSION>
 ```
 
-**Verify the runner started cleanly** by sending a test command after 3 seconds.
-PowerShell's cold-start JIT on macOS/Linux takes 2–3 s; writing before it is
-ready causes the write to block.
+**Wait for the runner to signal readiness** before issuing any commands.
+`runner.ps1` emits a `READY` line on the result FIFO as its very first act.
+`wait-ready.sh` blocks until that line arrives (default 60 s timeout):
 
 ```bash
-echo '$PSVersionTable.PSVersion.ToString()' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 15
+bash ${CLAUDE_SKILL_DIR}/scripts/wait-ready.sh <SESSION> 60
 ```
 
-If this times out or returns a non-zero exit code, the runner did not start. Stop
-the session, check for error output in `/tmp/pwsh_sess_<SESSION>.log`, and restart
-before proceeding.
+**Do not skip this step.** PowerShell's cold-start on macOS/Linux with many
+installed modules can take 10–30 s. If you write a command before `ReadLine()`
+is reached, the kernel buffers it silently and your read times out — leaving a
+stale sentinel in the result FIFO that desynchronises every subsequent command.
+
+If `wait-ready.sh` times out:
+
+- If the **log has content** — pwsh started but hung during initialization;
+  check the log for errors and restart.
+- If the **log is empty** — the .NET runtime never executed `runner.ps1` at all.
+  Run `ps aux | grep pwsh` and look for processes in `U` (uninterruptible wait)
+  state. This is a machine-level issue. Tell the user:
+  > `pwsh` is not responding — multiple processes appear to be stuck. Try
+  > killing them with `pkill -9 pwsh`, then run `brew reinstall powershell` to
+  > clear stale .NET caches. If processes remain in U-state, a reboot is needed.
+  Do not continue attempting to start a session until `pwsh --version` returns
+  normally.
+
+**After a command timeout:** if `run-command.sh` times out, a stale sentinel may
+be left in the result FIFO. Stop and restart the session before issuing new
+commands — do not attempt to continue in the same session after a timeout.
 
 **Runner lifetime:** The runner stays alive indefinitely — there is no idle timeout.
-It exits only when it receives `__EXIT__` (sent by `stop-session.sh`), when the
-PowerShell process crashes, or when the background task is killed. Once started
+It exits when `stop-session.sh` kills the runner process, when the PowerShell
+process crashes, or when the background task is killed externally. Once started
 successfully, the session remains valid across any number of tool calls until
 explicitly stopped.
 
@@ -218,12 +253,16 @@ variables or tokens.
 
 ## Troubleshooting
 
-| Symptom                                  | Cause                               | Fix                                                          |
-| ---------------------------------------- | ----------------------------------- | ------------------------------------------------------------ |
-| `run-command.sh` exits 2, "not running"  | Runner died or never started        | Run `check-session.sh`; restart with `run-session.sh`        |
-| Write to cmd pipe hangs                  | Session not started yet             | Check state file exists; wait 3 s                            |
-| `run-command.sh` times out               | Command exceeded timeout            | Retry with higher timeout argument                           |
-| Exit code 1, empty stderr                | Module not installed                | Run `Install-Module` in-session                              |
-| `Get-Mg*` cmdlet not recognized          | Resource is beta-only in Graph      | Use `Invoke-MgGraphRequest` with beta URL                    |
-| Sentinel never arrives                   | Runner crashed                      | Check `/tmp/pwsh_sess_<name>.log`                            |
-| Auth command times out                   | Device code not entered in time     | Use 300 s timeout; re-run to get a new code                  |
+| Symptom                                   | Cause                                  | Fix                                                               |
+| ----------------------------------------- | -------------------------------------- | ----------------------------------------------------------------- |
+| `run-command.sh` exits 2, "not running"   | Runner died or never started           | Run `check-session.sh`; restart with `run-session.sh`             |
+| `wait-ready.sh` times out, log has content | pwsh hung during initialization       | Check log for errors; stop and restart session                    |
+| `wait-ready.sh` times out, log is empty   | .NET runtime stuck before script ran   | `pkill -9 pwsh`; `brew reinstall powershell`; reboot if U-state   |
+| Env section shows `TIMED OUT`             | pwsh installed but slow to cold-start  | Proceed normally; runner uses `-NoProfile` and starts faster      |
+| Write to cmd pipe hangs                   | Runner dead, no FIFO reader            | `run-command.sh` times out the write after 10 s automatically     |
+| Commands return wrong results after restart | Old runner consuming FIFO commands   | Always use `stop-session.sh` before restarting; it kills the PID |
+| `run-command.sh` times out               | Command exceeded timeout               | Stop and restart session; stale sentinel corrupts further calls   |
+| Exit code 1, empty stderr                 | Module not installed                   | Run `Install-Module` in-session                                   |
+| `Get-Mg*` cmdlet not recognized           | Resource is beta-only in Graph         | Use `Invoke-MgGraphRequest` with beta URL                         |
+| Sentinel never arrives                    | Runner crashed                         | Check `/tmp/pwsh_sess_<name>.log`                                 |
+| Auth command times out                    | Device code not entered in time        | Use 300 s timeout; re-run to get a new code                       |

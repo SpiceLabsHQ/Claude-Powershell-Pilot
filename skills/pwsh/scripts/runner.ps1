@@ -3,6 +3,14 @@
 # Each command's stdout and stderr go to separate per-command temp files so
 # Claude can grep large output without loading it entirely.
 #
+# Startup protocol:
+#   1. This script writes "READY\n" to stdout before entering the command loop.
+#   2. The caller must read that line via wait-ready.sh before issuing commands.
+#      Skipping this step causes a race: commands written before ReadLine() is
+#      reached are buffered in the kernel pipe and the caller's read times out,
+#      leaving a stale sentinel in the result FIFO that desynchronises all
+#      subsequent commands.
+#
 # Sentinel format: DONE:<exitCode>:<stdoutFile>:<stderrFile>:<lineCount>
 # Send __EXIT__ to terminate the session.
 
@@ -12,6 +20,18 @@ param([string]$SessionName = "default")
 if ($PSVersionTable.PSVersion.Major -ge 7) {
     $PSStyle.OutputRendering = [System.Management.Automation.OutputRendering]::PlainText
 }
+
+# Diagnostics: log startup timestamp so the log is never silently empty.
+[Console]::Error.WriteLine("$(Get-Date -Format 'HH:mm:ss') runner.ps1 starting (session=$SessionName, pid=$PID)")
+[Console]::Error.Flush()
+
+# Signal readiness. wait-ready.sh blocks until it reads this line.
+# This must be the very first write to stdout.
+[Console]::Out.WriteLine("READY")
+[Console]::Out.Flush()
+
+[Console]::Error.WriteLine("$(Get-Date -Format 'HH:mm:ss') runner.ps1 ready — entering command loop")
+[Console]::Error.Flush()
 
 $cmdCount = 0
 

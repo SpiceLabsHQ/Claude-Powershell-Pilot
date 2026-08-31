@@ -14,7 +14,22 @@ if [ ! -f "$PID_FILE" ] || ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
 fi
 
 CMD="$(cat)"
-printf '%s\n' "$CMD" > "/tmp/pwsh_sess_${SESSION}_cmd"
+
+# Write to the cmd FIFO with a 10s timeout.
+# A plain redirect blocks forever if the runner is not reading (e.g. it died
+# between the liveness check above and here). The killer subshell prevents that.
+(printf '%s\n' "$CMD" > "/tmp/pwsh_sess_${SESSION}_cmd") &
+WRITER=$!
+( sleep 10; kill "$WRITER" 2>/dev/null ) &
+WRITE_KILLER=$!
+wait "$WRITER"
+WRITE_STATUS=$?
+kill "$WRITE_KILLER" 2>/dev/null; wait "$WRITE_KILLER" 2>/dev/null || true
+
+if [ $WRITE_STATUS -gt 128 ]; then
+  echo "ERROR: timed out writing to cmd FIFO after 10s — runner is not reading. Is it still alive?" >&2
+  exit 1
+fi
 
 IFS= read -r -t "$TIMEOUT" sentinel < "/tmp/pwsh_sess_${SESSION}_result"
 if [ $? -ne 0 ]; then
