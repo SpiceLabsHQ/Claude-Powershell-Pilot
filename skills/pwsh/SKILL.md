@@ -25,7 +25,7 @@ permission levels.
 If either value shows a background task ID (`Command running in background with
 ID: ...`), the env check is still running. Wait for both tasks:
 
-```
+```text
 TaskOutput(task_id: <ID>, block: true, timeout: 60000)
 ```
 
@@ -50,8 +50,9 @@ uses `-NoProfile` which is faster than the environment check scripts.
 
 - Two named FIFOs per session carry commands in and sentinels out (no polling or sleep)
 - `runner.ps1` emits `READY` on the result FIFO before entering its command loop; `wait-ready.sh` blocks until that signal arrives
-- Each command's stdout and stderr go to separate per-command temp files
-- Sentinel format: `DONE:<exitCode>:<stdoutFile>:<stderrFile>:<lineCount>`
+- Commands travel base64-encoded on one line as `RUN:<id>:<base64>`, so multi-line scripts work; the runner answers `DONE:<id>:<exitCode>:<stdoutFile>:<stderrFile>:<lineCount>`
+- The per-command id means `run-command.sh` only accepts its own result — stale sentinels from timed-out commands and stray output are discarded, never returned as the wrong command's output
+- Each command's stdout and stderr go to separate per-command temp files that persist until the session stops, so large results are never lost
 - Session state lives in `/tmp/pwsh_session_<name>.json`
 
 ---
@@ -97,9 +98,12 @@ If `wait-ready.sh` times out:
   Do not continue attempting to start a session until `pwsh --version` returns
   normally.
 
-**After a command timeout:** if `run-command.sh` times out, a stale sentinel may
-be left in the result FIFO. Stop and restart the session before issuing new
-commands — do not attempt to continue in the same session after a timeout.
+**After a command timeout:** the session stays usable. The timed-out command's
+late sentinel is discarded automatically by the next `run-command.sh` call, so
+output can no longer desynchronise. But the runner processes commands serially —
+a timed-out command is usually still running and the next command waits behind
+it. For a command that legitimately needs longer, re-run with a bigger timeout;
+if it is genuinely hung, stop and restart the session.
 
 **Runner lifetime:** The runner stays alive indefinitely — there is no idle timeout.
 It exits when `stop-session.sh` kills the runner process, when the PowerShell
@@ -133,6 +137,21 @@ the scripts themselves are pre-approved.
 echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION>
 ```
 
+**Multi-line scripts** are fully supported — the whole of stdin is sent as one
+unit, so `try/catch`, loops, and here-strings work as they would interactively.
+Use a heredoc:
+
+```bash
+bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 120 <<'EOF'
+try {
+    $r = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users"
+    $r.value | Select-Object displayName, userPrincipalName
+} catch {
+    Write-Error "request failed: $_"
+}
+EOF
+```
+
 For long-running commands (e.g., large data exports), pass a timeout in seconds:
 
 ```bash
@@ -148,8 +167,15 @@ echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION
 `run-command.sh` automatically:
 
 - Prints full stdout when output is ≤ 100 lines
-- Prints the first 20 lines and a reminder to grep when output exceeds 100 lines
+- Prints the first 20 lines plus the path of the full-output file when output
+  exceeds 100 lines
 - Always prints stderr when the exit code is non-zero
+
+**Large or expensive results are never lost.** Every command's complete stdout
+is preserved in the temp file named in the truncation notice
+(`/tmp/pwsh_<session>_stdout_<n>.txt`). When a result is truncated, read or
+grep that file directly — do not re-run an expensive query just to see more of
+its output. The files persist until `stop-session.sh` runs.
 
 ---
 
@@ -159,13 +185,26 @@ echo '<pwsh command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION
 If a service already shows an authenticated account, tell the user which account
 is active and proceed without re-authenticating.
 
-**If not connected**, use `auth-device-code.sh`. Do NOT use `run-command.sh` for
-authentication — it buffers all output until the command finishes, so the device
-code only becomes visible after the 120-second Microsoft timeout expires.
-`auth-device-code.sh` runs auth in a separate process where stdout streams to a
-file in real time, making the device code available within seconds.
+**Pick the auth pattern by where the module caches its tokens.** This is the
+one fact that determines everything else:
 
-**Auth flow:**
+- **Disk-cached modules** (Azure `Az`, Microsoft Graph SDK) persist tokens to
+  the user profile (`~/.Azure`, MSAL cache). Authenticate in a **separate
+  process** with `auth-device-code.sh`, then reconnect silently in the session —
+  the session finds the cached token on disk.
+- **In-process modules** (`ExchangeOnlineManagement` — both Exchange Online and
+  Security & Compliance — and PnP without persistence) keep the connection in
+  process memory only. Authenticating in a separate process is worthless: the
+  session cannot see that connection and will demand its own auth. These MUST
+  authenticate **inside the session** using the in-session flow below.
+
+### Flow A — disk-cached modules (separate process)
+
+Do NOT use `run-command.sh` for this flow — it buffers all output until the
+command finishes, so the device code only becomes visible after the 120-second
+Microsoft timeout expires. `auth-device-code.sh` runs auth in a separate process
+where stdout streams to a file in real time, making the device code available
+within seconds.
 
 1. Start auth in the background (`run_in_background: true`). Do NOT add a
    `sleep` prefix — `auth-device-code.sh` handles timing internally:
@@ -196,14 +235,50 @@ file in real time, making the device code available within seconds.
     echo '<silent connect command>' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 30
     ```
 
+### Flow B — in-process modules (inside the session)
+
+Run the connect command in the session as a long-timeout **background** Bash
+call, redirecting all of its streams to a progress file so the device code (or
+any prompt text) is visible in real time while the command is still blocking:
+
+1. Start the connect command as a background task (`run_in_background: true`):
+
+    ```bash
+    echo 'Connect-ExchangeOnline -Device *> /tmp/pwsh_auth_progress.txt' | bash ${CLAUDE_SKILL_DIR}/scripts/run-command.sh <SESSION> 300
+    ```
+
+2. After ~10 seconds, read `/tmp/pwsh_auth_progress.txt` (plain file read — not
+   a session command) and relay the device code to the user:
+
+   > To authenticate, open **<https://microsoft.com/devicelogin>** in your browser
+   > and enter the code: **XXXXXXXX**
+
+3. Wait for the background task to finish, then confirm with a quick session
+   command (`Get-ConnectionInformation` for EXO/S&C).
+
+For a module whose connect command opens a **browser** instead of printing a
+device code (e.g. `Connect-IPPSSession -UserPrincipalName <upn>`), the same
+background pattern applies — tell the user to watch for the browser window, and
+check the progress file if nothing appears.
+
 **Auth commands by service:**
 
-| Service           | Device code command                                          | Silent reconnect after auth          |
-| ----------------- | ------------------------------------------------------------ | ------------------------------------ |
-| Azure             | `Connect-AzAccount -UseDeviceAuthentication`                 | `Get-AzContext` (auto from ~/.Azure) |
-| Microsoft Graph   | `Connect-MgGraph -UseDeviceAuthentication -Scopes "..."`     | `Connect-MgGraph -NoWelcome`         |
-| Exchange Online   | `Connect-ExchangeOnline -Device`                             | `Connect-ExchangeOnline -Device`     |
-| SharePoint Online | `Connect-PnPOnline -DeviceLogin`                             | `Connect-PnPOnline -DeviceLogin`     |
+| Service               | Token cache | Interactive auth command                                          | Silent reconnect after auth          |
+| --------------------- | ----------- | ----------------------------------------------------------------- | ------------------------------------ |
+| Azure                 | disk        | `Connect-AzAccount -UseDeviceAuthentication` (Flow A)             | `Get-AzContext` (auto from ~/.Azure) |
+| Microsoft Graph       | disk        | `Connect-MgGraph -UseDeviceAuthentication -Scopes "..."` (Flow A) | `Connect-MgGraph -NoWelcome`         |
+| Exchange Online       | in-process  | `Connect-ExchangeOnline -Device` (Flow B)                         | none — reconnect is a fresh Flow B   |
+| Security & Compliance | in-process  | `Connect-IPPSSession -UserPrincipalName <upn>` (Flow B, browser)  | none — reconnect is a fresh Flow B   |
+| SharePoint Online     | in-process  | `Connect-PnPOnline -DeviceLogin` (Flow B)                         | none — reconnect is a fresh Flow B   |
+
+**Security & Compliance notes:** `Connect-IPPSSession` has no `-Device`
+parameter (as of `ExchangeOnlineManagement` 3.9.x) — device-code auth cannot be
+used at all; the `-UserPrincipalName` browser flow above is the interactive
+path, and a certificate + app registration (`-AppId -CertificateThumbprint
+-Organization`) is the unattended one. Do not try to feed it an Azure CLI token
+(`az account get-access-token --resource https://ps.compliance.protection.outlook.com`
+passed as `-AccessToken`) — the Azure CLI's first-party app is not authorized
+for that resource and the connect fails with `UnAuthorized`.
 
 Install missing modules in-session:
 
@@ -253,16 +328,18 @@ variables or tokens.
 
 ## Troubleshooting
 
-| Symptom                                   | Cause                                  | Fix                                                               |
-| ----------------------------------------- | -------------------------------------- | ----------------------------------------------------------------- |
-| `run-command.sh` exits 2, "not running"   | Runner died or never started           | Run `check-session.sh`; restart with `run-session.sh`             |
-| `wait-ready.sh` times out, log has content | pwsh hung during initialization       | Check log for errors; stop and restart session                    |
-| `wait-ready.sh` times out, log is empty   | .NET runtime stuck before script ran   | `pkill -9 pwsh`; `brew reinstall powershell`; reboot if U-state   |
-| Env section shows `TIMED OUT`             | pwsh installed but slow to cold-start  | Proceed normally; runner uses `-NoProfile` and starts faster      |
-| Write to cmd pipe hangs                   | Runner dead, no FIFO reader            | `run-command.sh` times out the write after 10 s automatically     |
-| Commands return wrong results after restart | Old runner consuming FIFO commands   | Always use `stop-session.sh` before restarting; it kills the PID |
-| `run-command.sh` times out               | Command exceeded timeout               | Stop and restart session; stale sentinel corrupts further calls   |
-| Exit code 1, empty stderr                 | Module not installed                   | Run `Install-Module` in-session                                   |
-| `Get-Mg*` cmdlet not recognized           | Resource is beta-only in Graph         | Use `Invoke-MgGraphRequest` with beta URL                         |
-| Sentinel never arrives                    | Runner crashed                         | Check `/tmp/pwsh_sess_<name>.log`                                 |
-| Auth command times out                    | Device code not entered in time        | Use 300 s timeout; re-run to get a new code                       |
+| Symptom                                     | Cause                                    | Fix                                                                                    |
+| ------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| `run-command.sh` exits 2, "not running"     | Runner died or never started             | Run `check-session.sh`; restart with `run-session.sh`                                  |
+| `wait-ready.sh` times out, log has content  | pwsh hung during initialization          | Check log for errors; stop and restart session                                         |
+| `wait-ready.sh` times out, log is empty     | .NET runtime stuck before script ran     | `pkill -9 pwsh`; `brew reinstall powershell`; reboot if U-state                        |
+| Env section shows `TIMED OUT`               | pwsh installed but slow to cold-start    | Proceed normally; runner uses `-NoProfile` and starts faster                           |
+| Write to cmd pipe hangs                     | Runner dead, no FIFO reader              | `run-command.sh` times out the write after 10 s automatically                          |
+| Commands return wrong results after restart | Old runner consuming FIFO commands       | Always use `stop-session.sh` before restarting; it kills the PID                       |
+| `run-command.sh` times out                  | Command exceeded timeout                 | Session stays usable; command may still be running — wait or restart                   |
+| `[discarded stale sentinel ...]` printed    | Earlier command timed out, then finished | Informational only; the result shown belongs to your command                           |
+| Device code never appears in progress file  | Module wrote to console, not a stream    | Run any session command — stray lines print as `[discarded stray session output: ...]` |
+| Exit code 1, empty stderr                   | Module not installed                     | Run `Install-Module` in-session                                                        |
+| `Get-Mg*` cmdlet not recognized             | Resource is beta-only in Graph           | Use `Invoke-MgGraphRequest` with beta URL                                              |
+| Sentinel never arrives                      | Runner crashed                           | Check `/tmp/pwsh_sess_<name>.log`                                                      |
+| Auth command times out                      | Device code not entered in time          | Use 300 s timeout; re-run to get a new code                                            |

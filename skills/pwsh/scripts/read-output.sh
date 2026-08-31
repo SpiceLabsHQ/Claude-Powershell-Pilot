@@ -7,16 +7,17 @@
 SENTINEL="$1"
 PATTERN="$2"
 
-IFS=':' read -r _ exitCode stdoutFile stderrFile lineCount <<< "$SENTINEL"
+IFS=':' read -r _ _ exitCode stdoutFile stderrFile lineCount <<< "$SENTINEL"
 
 echo "exit=$exitCode lines=$lineCount"
 
 if [ -n "$PATTERN" ]; then
   grep -i "$PATTERN" "$stdoutFile" 2>/dev/null
+  echo "[Filtered view — full output preserved at $stdoutFile]"
 elif [ "${lineCount:-0}" -le 100 ]; then
   cat "$stdoutFile" 2>/dev/null
 else
-  echo "[Output truncated — $lineCount lines. Re-run with a grep pattern to filter.]"
+  echo "[Showing first 20 of $lineCount lines — full output preserved at $stdoutFile. Read or grep that file directly; no need to re-run the command.]"
   head -20 "$stdoutFile" 2>/dev/null
 fi
 
