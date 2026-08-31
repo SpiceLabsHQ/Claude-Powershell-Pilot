@@ -1,4 +1,11 @@
 #!/bin/bash
+# Checks auth status for Microsoft Graph, Azure, and Exchange Online.
+# Wraps the entire pwsh invocation in a hard timeout so a slow cold-start
+# cannot hang the skill's environment section indefinitely.
+
+TIMEOUT=45
+tmpout=$(mktemp)
+
 pwsh -NoProfile -c '
 $WarningPreference = "SilentlyContinue"
 $results = @()
@@ -46,4 +53,25 @@ try {
 }
 
 $results -join "`n"
-' 2>/dev/null || echo "pwsh not installed"
+' >"$tmpout" 2>/dev/null &
+PID=$!
+
+( sleep $TIMEOUT; kill "$PID" 2>/dev/null ) &
+KILLER=$!
+
+wait "$PID"
+STATUS=$?
+
+kill "$KILLER" 2>/dev/null
+wait "$KILLER" 2>/dev/null || true
+
+if [ $STATUS -gt 128 ]; then
+  rm -f "$tmpout"
+  echo "TIMED OUT: auth status check took more than ${TIMEOUT}s (pwsh installed but slow to cold-start)"
+elif [ $STATUS -ne 0 ]; then
+  rm -f "$tmpout"
+  echo "pwsh not installed"
+else
+  cat "$tmpout"
+  rm -f "$tmpout"
+fi
